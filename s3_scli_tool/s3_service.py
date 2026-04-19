@@ -167,7 +167,7 @@ def _resolve_object_name(url: str, file_name: str | None) -> str:
 
 
 def _build_public_object_url(bucket_name: str, file_name: str, region: str) -> str:
-    quoted_name = quote(file_name)
+    quoted_name = quote(file_name, safe="/")
     if region == "us-east-1":
         return f"https://{bucket_name}.s3.amazonaws.com/{quoted_name}"
     return f"https://{bucket_name}.s3.{region}.amazonaws.com/{quoted_name}"
