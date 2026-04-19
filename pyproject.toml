@@ -12,6 +12,8 @@ boto3 = "^1.39.0"
 python-dotenv = "^1.1.1"
 typer = "^0.17.4"
 filetype = "^1.2.0"
+python-magic = "^0.4.27"
+python-magic-bin = { version = "^0.4.14", markers = "sys_platform == 'win32'" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.4.2"

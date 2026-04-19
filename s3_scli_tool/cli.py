@@ -21,6 +21,7 @@ from s3_scli_tool.s3_service import (
     init_client,
     list_buckets,
     list_object_versions_info,
+    organize_bucket_objects_by_extension,
     read_lifecycle_policy,
     read_bucket_policy,
     restore_previous_object_version,
@@ -100,6 +101,28 @@ def bucket_versioning_command(
 
         status = get_bucket_versioning_status(_get_client(), bucket_name)
         typer.echo(json.dumps(status, indent=2))
+    except Exception as error:
+        _exit_with_error(error)
+
+
+@bucket_app.command("organize-extensions")
+def organize_extensions_command(
+    bucket_name: str = typer.Argument(...),
+    organize_flag: bool = typer.Option(False, "--organize", "-org"),
+) -> None:
+    _configure()
+    try:
+        if not organize_flag:
+            raise ValueError("Pass --organize or -org to move objects into extension folders.")
+
+        result = organize_bucket_objects_by_extension(_get_client(), bucket_name)
+        counts = result["counts"]
+        if not counts:
+            typer.echo("No objects were reorganized.")
+            return
+
+        for extension, count in counts.items():
+            typer.echo(f"{extension} - {count}")
     except Exception as error:
         _exit_with_error(error)
 

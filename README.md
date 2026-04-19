@@ -38,6 +38,7 @@ poetry run s3cli bucket create my-demo-bucket --region us-east-1
 poetry run s3cli bucket delete my-demo-bucket
 poetry run s3cli bucket exists my-demo-bucket
 poetry run s3cli bucket versioning my-demo-bucket -vs
+poetry run s3cli bucket organize-extensions my-demo-bucket -org
 
 poetry run s3cli object upload-url my-demo-bucket https://example.com/image.png
 poetry run s3cli object upload-url my-demo-bucket https://example.com/image.png --file-name photo.png --keep-local
@@ -98,6 +99,17 @@ poetry run s3cli policy create-lifecycle my-demo-bucket --days 120 --prefix uplo
 - `object versions <bucket> <key> -vf`: shows version count and each version creation date
 - `object restore-previous <bucket> <key> -rv`: copies the previous version as a brand new latest version
 
+## Bucket organizer
+
+`bucket organize-extensions <bucket> -org` scans all objects in the bucket, uses `python-magic` to inspect file content, chooses an extension folder, and moves each object there.
+
+Example result:
+
+```text
+csv - 4
+jpg - 1
+```
+
 ## Function call purpose
 
 - `boto3.client("s3")`: creates the S3 client used by all commands
@@ -109,6 +121,7 @@ poetry run s3cli policy create-lifecycle my-demo-bucket --days 120 --prefix uplo
 - `get_bucket_versioning()`: checks whether bucket versioning is enabled or suspended
 - `list_object_versions()`: fetches stored versions for a specific object key
 - `copy_object()`: restores the previous object version by copying it onto the same key as a new version
+- `get_object()`: reads a small sample from each object so `python-magic` can detect MIME type
 - `put_object()`: uploads a small local file in a single request
 - `upload_file()`: uploads a larger local file using managed multipart transfer
 - `put_object_acl()`: tries to make one object public when ACLs are supported
@@ -125,6 +138,7 @@ poetry run s3cli policy create-lifecycle my-demo-bucket --days 120 --prefix uplo
 - `delete_bucket()`
 - `bucket_exists()`
 - `get_bucket_versioning_status()`
+- `organize_bucket_objects_by_extension()`
 - `download_file_and_upload_to_s3()`
 - `upload_small_file_to_s3()`
 - `upload_large_file_to_s3()`

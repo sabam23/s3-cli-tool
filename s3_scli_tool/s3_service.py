@@ -2,6 +2,8 @@ import io
 import hashlib
 import json
 import logging
+import mimetypes
+from collections import Counter
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -91,6 +93,51 @@ def get_bucket_versioning_status(aws_s3_client, bucket_name: str) -> dict[str, A
         "status": status,
         "versioning_enabled": status == "Enabled",
         "mfa_delete": mfa_delete,
+    }
+
+
+def organize_bucket_objects_by_extension(
+    aws_s3_client,
+    bucket_name: str,
+) -> dict[str, Any]:
+    object_keys = _list_bucket_object_keys(aws_s3_client, bucket_name)
+    existing_keys = set(object_keys)
+    moved_counts: Counter[str] = Counter()
+    moved_objects: list[dict[str, str]] = []
+
+    for object_key in object_keys:
+        if not _is_movable_object_key(object_key):
+            continue
+
+        folder_name = _resolve_object_folder_name(aws_s3_client, bucket_name, object_key)
+        file_name = Path(object_key).name
+        target_key = _build_target_key(folder_name, file_name, object_key, existing_keys)
+        if target_key == object_key:
+            continue
+
+        copy_response = aws_s3_client.copy_object(
+            Bucket=bucket_name,
+            Key=target_key,
+            CopySource={"Bucket": bucket_name, "Key": object_key},
+        )
+        if not _response_ok(copy_response):
+            raise ValueError(f"Could not move object {object_key} to {target_key}.")
+
+        delete_response = aws_s3_client.delete_object(Bucket=bucket_name, Key=object_key)
+        if not _response_ok(delete_response):
+            raise ValueError(f"Copied object {object_key} but could not remove the original object.")
+
+        existing_keys.discard(object_key)
+        existing_keys.add(target_key)
+        moved_counts[folder_name] += 1
+        moved_objects.append({"source_key": object_key, "target_key": target_key})
+
+    logger.info("Organized %s object(s) in bucket %s", sum(moved_counts.values()), bucket_name)
+    return {
+        "bucket_name": bucket_name,
+        "total_moved": sum(moved_counts.values()),
+        "counts": dict(sorted(moved_counts.items())),
+        "moved_objects": moved_objects,
     }
 
 
@@ -384,6 +431,116 @@ def _resolve_content_type(
     if validate_mime:
         return detect_allowed_file(local_file, object_name).mime_type
     return guess_mime_type(local_file)
+
+
+def _list_bucket_object_keys(aws_s3_client, bucket_name: str) -> list[str]:
+    paginator = aws_s3_client.get_paginator("list_objects_v2")
+    object_keys: list[str] = []
+
+    for page in paginator.paginate(Bucket=bucket_name):
+        for obj in page.get("Contents", []):
+            object_keys.append(obj["Key"])
+
+    return object_keys
+
+
+def _is_movable_object_key(object_key: str) -> bool:
+    if not object_key:
+        return False
+    if object_key.endswith("/"):
+        return False
+    return True
+
+
+def _resolve_object_folder_name(
+    aws_s3_client,
+    bucket_name: str,
+    object_key: str,
+) -> str:
+    sample = _read_object_sample(aws_s3_client, bucket_name, object_key)
+    suffix = Path(object_key).suffix.lower().lstrip(".")
+    detected_mime_type = _detect_mime_type_with_magic(sample)
+    detected_extension = _extension_from_mime_type(detected_mime_type)
+
+    if detected_extension and detected_mime_type not in {"text/plain", "application/octet-stream"}:
+        return detected_extension
+    if suffix:
+        return suffix
+    if detected_extension:
+        return detected_extension
+    return "unknown"
+
+
+def _read_object_sample(
+    aws_s3_client,
+    bucket_name: str,
+    object_key: str,
+    sample_size: int = 4096,
+) -> bytes:
+    response = aws_s3_client.get_object(Bucket=bucket_name, Key=object_key)
+    body = response["Body"]
+    try:
+        return body.read(sample_size)
+    finally:
+        body.close()
+
+
+def _detect_mime_type_with_magic(content: bytes) -> str | None:
+    if not content:
+        return None
+
+    try:
+        import magic
+    except ImportError as error:
+        raise ValueError(
+            "python-magic is required for bucket organization. Install project dependencies with Poetry."
+        ) from error
+
+    return magic.from_buffer(content, mime=True)
+
+
+def _extension_from_mime_type(mime_type: str | None) -> str | None:
+    if not mime_type:
+        return None
+
+    normalized_map = {
+        "image/jpeg": "jpg",
+        "text/csv": "csv",
+        "application/csv": "csv",
+        "application/json": "json",
+        "text/markdown": "md",
+        "application/x-tar": "tar",
+    }
+    if mime_type in normalized_map:
+        return normalized_map[mime_type]
+
+    guessed_extension = mimetypes.guess_extension(mime_type)
+    if guessed_extension is None:
+        return None
+
+    normalized_extension = guessed_extension.lstrip(".").lower()
+    if normalized_extension == "jpe":
+        return "jpg"
+    return normalized_extension
+
+
+def _build_target_key(
+    folder_name: str,
+    file_name: str,
+    source_key: str,
+    existing_keys: set[str],
+) -> str:
+    preferred_key = f"{folder_name}/{file_name}"
+    if preferred_key == source_key:
+        return preferred_key
+    if preferred_key not in existing_keys:
+        return preferred_key
+
+    source_path = Path(source_key)
+    suffix = source_path.suffix
+    stem = source_path.stem
+    unique_suffix = hashlib.sha1(source_key.encode("utf-8")).hexdigest()[:8]
+    return f"{folder_name}/{stem}-{unique_suffix}{suffix}"
 
 
 def _get_object_versions(
