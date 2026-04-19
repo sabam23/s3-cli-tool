@@ -37,11 +37,14 @@ poetry run s3cli bucket list
 poetry run s3cli bucket create my-demo-bucket --region us-east-1
 poetry run s3cli bucket delete my-demo-bucket
 poetry run s3cli bucket exists my-demo-bucket
+poetry run s3cli bucket versioning my-demo-bucket -vs
 
 poetry run s3cli object upload-url my-demo-bucket https://example.com/image.png
 poetry run s3cli object upload-url my-demo-bucket https://example.com/image.png --file-name photo.png --keep-local
 poetry run s3cli object upload-small my-demo-bucket ./files/photo.png --validate-mime
 poetry run s3cli object upload-large my-demo-bucket ./videos/demo.mp4 --part-size-mb 8
+poetry run s3cli object versions my-demo-bucket uploads/photo.png -vf
+poetry run s3cli object restore-previous my-demo-bucket uploads/photo.png -rv
 poetry run s3cli object delete my-demo-bucket uploads/photo.png -del
 poetry run s3cli object public-read my-demo-bucket photo.png
 
@@ -89,6 +92,12 @@ You can limit the rule to a prefix:
 poetry run s3cli policy create-lifecycle my-demo-bucket --days 120 --prefix uploads/
 ```
 
+## Versioning commands
+
+- `bucket versioning <bucket> -vs`: shows whether bucket versioning is enabled
+- `object versions <bucket> <key> -vf`: shows version count and each version creation date
+- `object restore-previous <bucket> <key> -rv`: copies the previous version as a brand new latest version
+
 ## Function call purpose
 
 - `boto3.client("s3")`: creates the S3 client used by all commands
@@ -97,6 +106,9 @@ poetry run s3cli policy create-lifecycle my-demo-bucket --days 120 --prefix uplo
 - `delete_bucket()`: removes an empty bucket
 - `delete_object()`: removes one specific object from a bucket by key
 - `head_bucket()`: checks whether a bucket exists and is reachable
+- `get_bucket_versioning()`: checks whether bucket versioning is enabled or suspended
+- `list_object_versions()`: fetches stored versions for a specific object key
+- `copy_object()`: restores the previous object version by copying it onto the same key as a new version
 - `put_object()`: uploads a small local file in a single request
 - `upload_file()`: uploads a larger local file using managed multipart transfer
 - `put_object_acl()`: tries to make one object public when ACLs are supported
@@ -112,9 +124,12 @@ poetry run s3cli policy create-lifecycle my-demo-bucket --days 120 --prefix uplo
 - `create_bucket()`
 - `delete_bucket()`
 - `bucket_exists()`
+- `get_bucket_versioning_status()`
 - `download_file_and_upload_to_s3()`
 - `upload_small_file_to_s3()`
 - `upload_large_file_to_s3()`
+- `list_object_versions_info()`
+- `restore_previous_object_version()`
 - `delete_object_from_s3()`
 - `set_object_access_policy()`
 - `generate_public_read_policy()`

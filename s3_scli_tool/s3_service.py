@@ -81,6 +81,19 @@ def bucket_exists(aws_s3_client, bucket_name: str) -> bool:
     return _response_ok(response)
 
 
+def get_bucket_versioning_status(aws_s3_client, bucket_name: str) -> dict[str, Any]:
+    response = aws_s3_client.get_bucket_versioning(Bucket=bucket_name)
+    status = response.get("Status", "Disabled")
+    mfa_delete = response.get("MFADelete", "Disabled")
+    logger.info("Bucket versioning status fetched for %s", bucket_name)
+    return {
+        "bucket_name": bucket_name,
+        "status": status,
+        "versioning_enabled": status == "Enabled",
+        "mfa_delete": mfa_delete,
+    }
+
+
 def download_file_and_upload_to_s3(
     aws_s3_client,
     bucket_name: str,
@@ -161,6 +174,66 @@ def upload_large_file_to_s3(
     logger.info("Large file uploaded to %s/%s", bucket_name, target_object_name)
     region = aws_s3_client.meta.region_name or get_settings().aws_region_name
     return _build_public_object_url(bucket_name, target_object_name, region)
+
+
+def list_object_versions_info(
+    aws_s3_client,
+    bucket_name: str,
+    object_key: str,
+) -> dict[str, Any]:
+    versions = _get_object_versions(aws_s3_client, bucket_name, object_key)
+    logger.info("Fetched %s version(s) for %s/%s", len(versions), bucket_name, object_key)
+    return {
+        "bucket_name": bucket_name,
+        "object_key": object_key,
+        "version_count": len(versions),
+        "versions": [
+            {
+                "version_id": version["VersionId"],
+                "is_latest": version["IsLatest"],
+                "last_modified": version["LastModified"].isoformat(),
+            }
+            for version in versions
+        ],
+    }
+
+
+def restore_previous_object_version(
+    aws_s3_client,
+    bucket_name: str,
+    object_key: str,
+) -> dict[str, Any]:
+    versions = _get_object_versions(aws_s3_client, bucket_name, object_key)
+    if len(versions) < 2:
+        raise ValueError("At least two object versions are required to restore the previous version.")
+
+    source_version = versions[1]
+    response = aws_s3_client.copy_object(
+        Bucket=bucket_name,
+        Key=object_key,
+        CopySource={
+            "Bucket": bucket_name,
+            "Key": object_key,
+            "VersionId": source_version["VersionId"],
+        },
+    )
+    if not _response_ok(response):
+        raise ValueError("Previous object version could not be restored.")
+
+    logger.info(
+        "Previous version restored for %s/%s from version %s",
+        bucket_name,
+        object_key,
+        source_version["VersionId"],
+    )
+    return {
+        "bucket_name": bucket_name,
+        "object_key": object_key,
+        "restored": True,
+        "restored_from_version_id": source_version["VersionId"],
+        "restored_from_last_modified": source_version["LastModified"].isoformat(),
+        "new_version_id": response.get("VersionId"),
+    }
 
 
 def set_object_access_policy(aws_s3_client, bucket_name: str, file_name: str) -> bool:
@@ -311,6 +384,23 @@ def _resolve_content_type(
     if validate_mime:
         return detect_allowed_file(local_file, object_name).mime_type
     return guess_mime_type(local_file)
+
+
+def _get_object_versions(
+    aws_s3_client,
+    bucket_name: str,
+    object_key: str,
+) -> list[dict[str, Any]]:
+    paginator = aws_s3_client.get_paginator("list_object_versions")
+    versions: list[dict[str, Any]] = []
+
+    for page in paginator.paginate(Bucket=bucket_name, Prefix=object_key):
+        for version in page.get("Versions", []):
+            if version.get("Key") == object_key:
+                versions.append(version)
+
+    versions.sort(key=lambda item: item["LastModified"], reverse=True)
+    return versions
 
 
 def _download_remote_content(url: str) -> bytes:

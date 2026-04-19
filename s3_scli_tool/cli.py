@@ -17,10 +17,13 @@ from s3_scli_tool.s3_service import (
     download_file_and_upload_to_s3,
     generate_public_read_policy,
     generate_lifecycle_policy,
+    get_bucket_versioning_status,
     init_client,
     list_buckets,
+    list_object_versions_info,
     read_lifecycle_policy,
     read_bucket_policy,
+    restore_previous_object_version,
     set_object_access_policy,
     upload_large_file_to_s3,
     upload_small_file_to_s3,
@@ -81,6 +84,22 @@ def bucket_exists_command(bucket_name: str = typer.Argument(...)) -> None:
     try:
         exists = bucket_exists(_get_client(), bucket_name)
         typer.echo(f"exists={exists}")
+    except Exception as error:
+        _exit_with_error(error)
+
+
+@bucket_app.command("versioning")
+def bucket_versioning_command(
+    bucket_name: str = typer.Argument(...),
+    status_flag: bool = typer.Option(False, "--status", "-vs"),
+) -> None:
+    _configure()
+    try:
+        if not status_flag:
+            raise ValueError("Pass --status or -vs to show whether bucket versioning is enabled.")
+
+        status = get_bucket_versioning_status(_get_client(), bucket_name)
+        typer.echo(json.dumps(status, indent=2))
     except Exception as error:
         _exit_with_error(error)
 
@@ -159,6 +178,40 @@ def public_read_command(
     try:
         status = set_object_access_policy(_get_client(), bucket_name, file_name)
         typer.echo(f"public_read={status}")
+    except Exception as error:
+        _exit_with_error(error)
+
+
+@object_app.command("versions")
+def object_versions_command(
+    bucket_name: str = typer.Argument(...),
+    object_key: str = typer.Argument(...),
+    versions_flag: bool = typer.Option(False, "--versions", "-vf"),
+) -> None:
+    _configure()
+    try:
+        if not versions_flag:
+            raise ValueError("Pass --versions or -vf to show object version details.")
+
+        versions = list_object_versions_info(_get_client(), bucket_name, object_key)
+        typer.echo(json.dumps(versions, indent=2))
+    except Exception as error:
+        _exit_with_error(error)
+
+
+@object_app.command("restore-previous")
+def restore_previous_command(
+    bucket_name: str = typer.Argument(...),
+    object_key: str = typer.Argument(...),
+    restore_flag: bool = typer.Option(False, "--restore", "-rv"),
+) -> None:
+    _configure()
+    try:
+        if not restore_flag:
+            raise ValueError("Pass --restore or -rv to restore the previous object version.")
+
+        result = restore_previous_object_version(_get_client(), bucket_name, object_key)
+        typer.echo(json.dumps(result, indent=2))
     except Exception as error:
         _exit_with_error(error)
 
