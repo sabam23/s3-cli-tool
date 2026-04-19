@@ -1,10 +1,12 @@
 import io
+import hashlib
 import json
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote, unquote, urlparse
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import boto3
 from botocore.exceptions import ClientError
@@ -80,8 +82,7 @@ def download_file_and_upload_to_s3(
     keep_local: bool = False,
 ) -> str:
     object_name = _resolve_object_name(url, file_name)
-    with urlopen(url) as response:
-        content = response.read()
+    content = _download_remote_content(url)
 
     detected_file = detect_allowed_file(content, object_name)
     aws_s3_client.upload_fileobj(
@@ -101,46 +102,39 @@ def download_file_and_upload_to_s3(
 
 
 def set_object_access_policy(aws_s3_client, bucket_name: str, file_name: str) -> bool:
-    response = aws_s3_client.put_object_acl(
-        ACL="public-read",
-        Bucket=bucket_name,
-        Key=file_name,
-    )
+    try:
+        response = aws_s3_client.put_object_acl(
+            ACL="public-read",
+            Bucket=bucket_name,
+            Key=file_name,
+        )
+    except ClientError as error:
+        error_code = error.response.get("Error", {}).get("Code")
+        if error_code == "AccessControlListNotSupported":
+            logger.info(
+                "Bucket %s does not allow ACLs. Falling back to bucket policy for %s",
+                bucket_name,
+                file_name,
+            )
+            fallback_response = _upsert_public_read_bucket_policy(
+                aws_s3_client, bucket_name, file_name=file_name
+            )
+            return _response_ok(fallback_response)
+        raise
     logger.info("Public read ACL set for %s/%s", bucket_name, file_name)
     return _response_ok(response)
 
 
-def generate_public_read_policy(bucket_name: str) -> str:
+def generate_public_read_policy(bucket_name: str, file_name: str | None = None) -> str:
     policy = {
         "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Sid": "PublicReadGetObject",
-                "Effect": "Allow",
-                "Principal": "*",
-                "Action": "s3:GetObject",
-                "Resource": f"arn:aws:s3:::{bucket_name}/*",
-            }
-        ],
+        "Statement": [_build_public_read_statement(bucket_name, file_name)],
     }
     return json.dumps(policy)
 
 
 def create_bucket_policy(aws_s3_client, bucket_name: str) -> bool:
-    try:
-        aws_s3_client.delete_public_access_block(Bucket=bucket_name)
-    except ClientError as error:
-        error_code = error.response.get("Error", {}).get("Code")
-        if error_code not in {
-            "NoSuchPublicAccessBlockConfiguration",
-            "NoSuchPublicAccessBlock",
-        }:
-            raise
-
-    response = aws_s3_client.put_bucket_policy(
-        Bucket=bucket_name,
-        Policy=generate_public_read_policy(bucket_name),
-    )
+    response = _upsert_public_read_bucket_policy(aws_s3_client, bucket_name)
     logger.info("Bucket policy created for %s", bucket_name)
     return _response_ok(response)
 
@@ -171,3 +165,91 @@ def _build_public_object_url(bucket_name: str, file_name: str, region: str) -> s
     if region == "us-east-1":
         return f"https://{bucket_name}.s3.amazonaws.com/{quoted_name}"
     return f"https://{bucket_name}.s3.{region}.amazonaws.com/{quoted_name}"
+
+
+def _download_remote_content(url: str) -> bytes:
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; s3-scli-tool/0.1)",
+            "Accept": "*/*",
+        },
+    )
+    try:
+        with urlopen(request, timeout=30) as response:
+            return response.read()
+    except HTTPError as error:
+        raise ValueError(
+            f"Could not download file from URL. Server returned {error.code} {error.reason}."
+        ) from error
+    except URLError as error:
+        raise ValueError(f"Could not download file from URL: {error.reason}.") from error
+
+
+def _upsert_public_read_bucket_policy(
+    aws_s3_client,
+    bucket_name: str,
+    file_name: str | None = None,
+) -> dict[str, Any]:
+    _delete_public_access_block_if_present(aws_s3_client, bucket_name)
+    current_policy = _get_existing_bucket_policy(aws_s3_client, bucket_name)
+    statement = _build_public_read_statement(bucket_name, file_name)
+    current_policy["Version"] = "2012-10-17"
+
+    statements = current_policy.get("Statement", [])
+    if not isinstance(statements, list):
+        statements = [statements]
+
+    filtered_statements = [
+        item
+        for item in statements
+        if item.get("Sid") != statement["Sid"] and item.get("Resource") != statement["Resource"]
+    ]
+    filtered_statements.append(statement)
+    current_policy["Statement"] = filtered_statements
+
+    return aws_s3_client.put_bucket_policy(
+        Bucket=bucket_name,
+        Policy=json.dumps(current_policy),
+    )
+
+
+def _delete_public_access_block_if_present(aws_s3_client, bucket_name: str) -> None:
+    try:
+        aws_s3_client.delete_public_access_block(Bucket=bucket_name)
+    except ClientError as error:
+        error_code = error.response.get("Error", {}).get("Code")
+        if error_code not in {
+            "NoSuchPublicAccessBlockConfiguration",
+            "NoSuchPublicAccessBlock",
+        }:
+            raise
+
+
+def _get_existing_bucket_policy(aws_s3_client, bucket_name: str) -> dict[str, Any]:
+    try:
+        response = aws_s3_client.get_bucket_policy(Bucket=bucket_name)
+    except ClientError as error:
+        error_code = error.response.get("Error", {}).get("Code")
+        if error_code in {"NoSuchBucketPolicy", "NoSuchPolicy"}:
+            return {"Version": "2012-10-17", "Statement": []}
+        raise
+    return json.loads(response["Policy"])
+
+
+def _build_public_read_statement(bucket_name: str, file_name: str | None = None) -> dict[str, str]:
+    if file_name is None:
+        resource = f"arn:aws:s3:::{bucket_name}/*"
+        sid = "PublicReadGetObject"
+    else:
+        normalized_file_name = file_name.lstrip("/")
+        resource = f"arn:aws:s3:::{bucket_name}/{normalized_file_name}"
+        sid = f"PublicReadGetObject{hashlib.sha1(normalized_file_name.encode('utf-8')).hexdigest()[:12]}"
+
+    return {
+        "Sid": sid,
+        "Effect": "Allow",
+        "Principal": "*",
+        "Action": "s3:GetObject",
+        "Resource": resource,
+    }

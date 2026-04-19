@@ -1,5 +1,6 @@
 import json
 import logging
+from urllib.error import HTTPError, URLError
 
 import typer
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError, PartialCredentialsError
@@ -157,6 +158,8 @@ def _exit_with_error(error: Exception) -> None:
             BotoCoreError,
             NoCredentialsError,
             PartialCredentialsError,
+            HTTPError,
+            URLError,
             ValueError,
         ),
     ):
