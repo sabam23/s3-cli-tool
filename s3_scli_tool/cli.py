@@ -11,13 +11,18 @@ from s3_scli_tool.s3_service import (
     bucket_exists,
     create_bucket,
     create_bucket_policy,
+    create_lifecycle_policy,
     delete_bucket,
     download_file_and_upload_to_s3,
     generate_public_read_policy,
+    generate_lifecycle_policy,
     init_client,
     list_buckets,
+    read_lifecycle_policy,
     read_bucket_policy,
     set_object_access_policy,
+    upload_large_file_to_s3,
+    upload_small_file_to_s3,
 )
 
 app = typer.Typer(
@@ -100,6 +105,50 @@ def upload_url_command(
         _exit_with_error(error)
 
 
+@object_app.command("upload-small")
+def upload_small_command(
+    bucket_name: str = typer.Argument(...),
+    file_path: str = typer.Argument(...),
+    object_name: str | None = typer.Option(None, "--object-name", "-o"),
+    validate_mime: bool = typer.Option(False, "--validate-mime"),
+) -> None:
+    _configure()
+    try:
+        uploaded_url = upload_small_file_to_s3(
+            _get_client(),
+            bucket_name=bucket_name,
+            file_path=file_path,
+            object_name=object_name,
+            validate_mime=validate_mime,
+        )
+        typer.echo(uploaded_url)
+    except Exception as error:
+        _exit_with_error(error)
+
+
+@object_app.command("upload-large")
+def upload_large_command(
+    bucket_name: str = typer.Argument(...),
+    file_path: str = typer.Argument(...),
+    object_name: str | None = typer.Option(None, "--object-name", "-o"),
+    part_size_mb: int = typer.Option(8, "--part-size-mb"),
+    validate_mime: bool = typer.Option(False, "--validate-mime"),
+) -> None:
+    _configure()
+    try:
+        uploaded_url = upload_large_file_to_s3(
+            _get_client(),
+            bucket_name=bucket_name,
+            file_path=file_path,
+            object_name=object_name,
+            part_size_mb=part_size_mb,
+            validate_mime=validate_mime,
+        )
+        typer.echo(uploaded_url)
+    except Exception as error:
+        _exit_with_error(error)
+
+
 @object_app.command("public-read")
 def public_read_command(
     bucket_name: str = typer.Argument(...),
@@ -128,6 +177,52 @@ def create_policy_command(bucket_name: str = typer.Argument(...)) -> None:
     try:
         created = create_bucket_policy(_get_client(), bucket_name)
         typer.echo(f"policy_created={created}")
+    except Exception as error:
+        _exit_with_error(error)
+
+
+@policy_app.command("generate-lifecycle")
+def generate_lifecycle_command(
+    expiration_days: int = typer.Option(120, "--days", "-d"),
+    prefix: str = typer.Option("", "--prefix", "-p"),
+) -> None:
+    _configure()
+    try:
+        typer.echo(
+            json.dumps(
+                json.loads(generate_lifecycle_policy(expiration_days, prefix)),
+                indent=2,
+            )
+        )
+    except Exception as error:
+        _exit_with_error(error)
+
+
+@policy_app.command("create-lifecycle")
+def create_lifecycle_command(
+    bucket_name: str = typer.Argument(...),
+    expiration_days: int = typer.Option(120, "--days", "-d"),
+    prefix: str = typer.Option("", "--prefix", "-p"),
+) -> None:
+    _configure()
+    try:
+        created = create_lifecycle_policy(
+            _get_client(),
+            bucket_name=bucket_name,
+            expiration_days=expiration_days,
+            prefix=prefix,
+        )
+        typer.echo(f"lifecycle_created={created}")
+    except Exception as error:
+        _exit_with_error(error)
+
+
+@policy_app.command("read-lifecycle")
+def read_lifecycle_command(bucket_name: str = typer.Argument(...)) -> None:
+    _configure()
+    try:
+        policy = read_lifecycle_policy(_get_client(), bucket_name)
+        typer.echo(json.dumps(policy, indent=2))
     except Exception as error:
         _exit_with_error(error)
 

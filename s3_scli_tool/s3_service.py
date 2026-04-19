@@ -9,10 +9,11 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import Request, urlopen
 
 import boto3
+from boto3.s3.transfer import TransferConfig
 from botocore.exceptions import ClientError
 
 from s3_scli_tool.config import get_settings
-from s3_scli_tool.mime_validation import detect_allowed_file
+from s3_scli_tool.mime_validation import detect_allowed_file, guess_mime_type
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,61 @@ def download_file_and_upload_to_s3(
     return _build_public_object_url(bucket_name, detected_file.file_name, region)
 
 
+def upload_small_file_to_s3(
+    aws_s3_client,
+    bucket_name: str,
+    file_path: str,
+    object_name: str | None = None,
+    validate_mime: bool = False,
+) -> str:
+    local_file = _resolve_local_file(file_path)
+    target_object_name = object_name or local_file.name
+    put_object_kwargs = _build_put_object_kwargs(local_file, target_object_name, validate_mime)
+    response = aws_s3_client.put_object(
+        Bucket=bucket_name,
+        Key=target_object_name,
+        Body=local_file.read_bytes(),
+        **put_object_kwargs,
+    )
+    if not _response_ok(response):
+        raise ValueError("Small file upload did not complete successfully.")
+
+    logger.info("Small file uploaded to %s/%s", bucket_name, target_object_name)
+    region = aws_s3_client.meta.region_name or get_settings().aws_region_name
+    return _build_public_object_url(bucket_name, target_object_name, region)
+
+
+def upload_large_file_to_s3(
+    aws_s3_client,
+    bucket_name: str,
+    file_path: str,
+    object_name: str | None = None,
+    part_size_mb: int = 8,
+    validate_mime: bool = False,
+) -> str:
+    if part_size_mb < 5:
+        raise ValueError("Multipart part size must be at least 5 MB.")
+
+    local_file = _resolve_local_file(file_path)
+    target_object_name = object_name or local_file.name
+    extra_args = _build_transfer_extra_args(local_file, target_object_name, validate_mime)
+    part_size_bytes = part_size_mb * 1024 * 1024
+    transfer_config = TransferConfig(
+        multipart_threshold=part_size_bytes,
+        multipart_chunksize=part_size_bytes,
+    )
+    aws_s3_client.upload_file(
+        Filename=str(local_file),
+        Bucket=bucket_name,
+        Key=target_object_name,
+        ExtraArgs=extra_args,
+        Config=transfer_config,
+    )
+    logger.info("Large file uploaded to %s/%s", bucket_name, target_object_name)
+    region = aws_s3_client.meta.region_name or get_settings().aws_region_name
+    return _build_public_object_url(bucket_name, target_object_name, region)
+
+
 def set_object_access_policy(aws_s3_client, bucket_name: str, file_name: str) -> bool:
     try:
         response = aws_s3_client.put_object_acl(
@@ -139,6 +195,49 @@ def create_bucket_policy(aws_s3_client, bucket_name: str) -> bool:
     return _response_ok(response)
 
 
+def generate_lifecycle_policy(expiration_days: int = 120, prefix: str = "") -> str:
+    if expiration_days <= 0:
+        raise ValueError("Lifecycle expiration days must be greater than zero.")
+
+    policy = {
+        "Rules": [
+            {
+                "ID": f"DeleteObjectsAfter{expiration_days}Days",
+                "Filter": {"Prefix": prefix},
+                "Status": "Enabled",
+                "Expiration": {"Days": expiration_days},
+            }
+        ]
+    }
+    return json.dumps(policy)
+
+
+def create_lifecycle_policy(
+    aws_s3_client,
+    bucket_name: str,
+    expiration_days: int = 120,
+    prefix: str = "",
+) -> bool:
+    response = aws_s3_client.put_bucket_lifecycle_configuration(
+        Bucket=bucket_name,
+        LifecycleConfiguration=json.loads(generate_lifecycle_policy(expiration_days, prefix)),
+    )
+    logger.info("Lifecycle policy created for %s", bucket_name)
+    return _response_ok(response)
+
+
+def read_lifecycle_policy(aws_s3_client, bucket_name: str) -> dict[str, Any]:
+    try:
+        response = aws_s3_client.get_bucket_lifecycle_configuration(Bucket=bucket_name)
+    except ClientError as error:
+        error_code = error.response.get("Error", {}).get("Code")
+        if error_code == "NoSuchLifecycleConfiguration":
+            return {"Rules": []}
+        raise
+    logger.info("Lifecycle policy fetched for %s", bucket_name)
+    return response
+
+
 def read_bucket_policy(aws_s3_client, bucket_name: str) -> dict[str, Any]:
     policy = aws_s3_client.get_bucket_policy(Bucket=bucket_name)
     logger.info("Bucket policy fetched for %s", bucket_name)
@@ -165,6 +264,47 @@ def _build_public_object_url(bucket_name: str, file_name: str, region: str) -> s
     if region == "us-east-1":
         return f"https://{bucket_name}.s3.amazonaws.com/{quoted_name}"
     return f"https://{bucket_name}.s3.{region}.amazonaws.com/{quoted_name}"
+
+
+def _resolve_local_file(file_path: str) -> Path:
+    local_file = Path(file_path).expanduser().resolve()
+    if not local_file.exists():
+        raise ValueError(f"Local file was not found: {local_file}")
+    if not local_file.is_file():
+        raise ValueError(f"Provided path is not a file: {local_file}")
+    return local_file
+
+
+def _build_put_object_kwargs(
+    local_file: Path,
+    object_name: str,
+    validate_mime: bool,
+) -> dict[str, Any]:
+    content_type = _resolve_content_type(local_file, object_name, validate_mime)
+    if content_type is None:
+        return {}
+    return {"ContentType": content_type}
+
+
+def _build_transfer_extra_args(
+    local_file: Path,
+    object_name: str,
+    validate_mime: bool,
+) -> dict[str, str]:
+    content_type = _resolve_content_type(local_file, object_name, validate_mime)
+    if content_type is None:
+        return {}
+    return {"ContentType": content_type}
+
+
+def _resolve_content_type(
+    local_file: Path,
+    object_name: str,
+    validate_mime: bool,
+) -> str | None:
+    if validate_mime:
+        return detect_allowed_file(local_file, object_name).mime_type
+    return guess_mime_type(local_file)
 
 
 def _download_remote_content(url: str) -> bytes:
