@@ -42,6 +42,7 @@ poetry run s3cli object upload-url my-demo-bucket https://example.com/image.png
 poetry run s3cli object upload-url my-demo-bucket https://example.com/image.png --file-name photo.png --keep-local
 poetry run s3cli object upload-small my-demo-bucket ./files/photo.png --validate-mime
 poetry run s3cli object upload-large my-demo-bucket ./videos/demo.mp4 --part-size-mb 8
+poetry run s3cli object delete my-demo-bucket uploads/photo.png -del
 poetry run s3cli object public-read my-demo-bucket photo.png
 
 poetry run s3cli policy generate my-demo-bucket
@@ -70,6 +71,7 @@ Validation is based on MIME type detection, not only file extension.
 - `upload-url`: downloads a remote file first, validates MIME type, then uploads it to S3
 - `upload-small`: uses a single `put_object` request for local files
 - `upload-large`: uses boto3 managed multipart upload via `upload_file` and `TransferConfig`
+- `delete`: removes a specific object by bucket name and object key, confirmed with `-del`
 
 ## Lifecycle policy
 
@@ -93,6 +95,7 @@ poetry run s3cli policy create-lifecycle my-demo-bucket --days 120 --prefix uplo
 - `list_buckets()`: reads all buckets available for the configured account
 - `create_bucket()`: creates a new bucket in the target region
 - `delete_bucket()`: removes an empty bucket
+- `delete_object()`: removes one specific object from a bucket by key
 - `head_bucket()`: checks whether a bucket exists and is reachable
 - `put_object()`: uploads a small local file in a single request
 - `upload_file()`: uploads a larger local file using managed multipart transfer
@@ -112,6 +115,7 @@ poetry run s3cli policy create-lifecycle my-demo-bucket --days 120 --prefix uplo
 - `download_file_and_upload_to_s3()`
 - `upload_small_file_to_s3()`
 - `upload_large_file_to_s3()`
+- `delete_object_from_s3()`
 - `set_object_access_policy()`
 - `generate_public_read_policy()`
 - `create_bucket_policy()`

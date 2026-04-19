@@ -13,6 +13,7 @@ from s3_scli_tool.s3_service import (
     create_bucket_policy,
     create_lifecycle_policy,
     delete_bucket,
+    delete_object_from_s3,
     download_file_and_upload_to_s3,
     generate_public_read_policy,
     generate_lifecycle_policy,
@@ -158,6 +159,23 @@ def public_read_command(
     try:
         status = set_object_access_policy(_get_client(), bucket_name, file_name)
         typer.echo(f"public_read={status}")
+    except Exception as error:
+        _exit_with_error(error)
+
+
+@object_app.command("delete")
+def delete_object_command(
+    bucket_name: str = typer.Argument(...),
+    object_key: str = typer.Argument(...),
+    delete: bool = typer.Option(False, "--delete", "-del"),
+) -> None:
+    _configure()
+    try:
+        if not delete:
+            raise ValueError("Pass --delete or -del to confirm object deletion.")
+
+        status = delete_object_from_s3(_get_client(), bucket_name, object_key)
+        typer.echo(f"object_deleted={status}")
     except Exception as error:
         _exit_with_error(error)
 

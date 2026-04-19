@@ -62,6 +62,12 @@ def delete_bucket(aws_s3_client, bucket_name: str) -> bool:
     return _response_ok(response)
 
 
+def delete_object_from_s3(aws_s3_client, bucket_name: str, object_key: str) -> bool:
+    response = aws_s3_client.delete_object(Bucket=bucket_name, Key=object_key)
+    logger.info("Object deleted from %s/%s", bucket_name, object_key)
+    return _response_ok(response)
+
+
 def bucket_exists(aws_s3_client, bucket_name: str) -> bool:
     try:
         response = aws_s3_client.head_bucket(Bucket=bucket_name)
@@ -245,7 +251,7 @@ def read_bucket_policy(aws_s3_client, bucket_name: str) -> dict[str, Any]:
 
 
 def _response_ok(response: dict[str, Any]) -> bool:
-    return response.get("ResponseMetadata", {}).get("HTTPStatusCode") == 200
+    return response.get("ResponseMetadata", {}).get("HTTPStatusCode") in {200, 204}
 
 
 def _resolve_object_name(url: str, file_name: str | None) -> str:

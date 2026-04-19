@@ -2,7 +2,11 @@ import os
 import tempfile
 from pathlib import Path
 
-from s3_scli_tool.s3_service import upload_large_file_to_s3, upload_small_file_to_s3
+from s3_scli_tool.s3_service import (
+    delete_object_from_s3,
+    upload_large_file_to_s3,
+    upload_small_file_to_s3,
+)
 
 
 PNG_BYTES = bytes(
@@ -120,6 +124,23 @@ def test_upload_large_file_to_s3_rejects_small_part_size() -> None:
             raise AssertionError("Expected ValueError for multipart part size below 5 MB.")
     finally:
         file_path.unlink(missing_ok=True)
+
+
+def test_delete_object_from_s3() -> None:
+    class FakeClient:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def delete_object(self, **kwargs):
+            self.calls.append(kwargs)
+            return {"ResponseMetadata": {"HTTPStatusCode": 204}}
+
+    client = FakeClient()
+
+    result = delete_object_from_s3(client, "demo-bucket", "uploads/image.png")
+
+    assert result is True
+    assert client.calls == [{"Bucket": "demo-bucket", "Key": "uploads/image.png"}]
 
 
 def _create_temp_file(file_name: str, content: bytes) -> Path:
